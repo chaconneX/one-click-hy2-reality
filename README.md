@@ -43,7 +43,7 @@ hy2 &amp; reality一键安装脚本
 
 ## ⚙️ 安装方法
 ```bash
-wget -N --no-check-certificate  https://raw.githubusercontent.com/chaconne86/one-click-hy2-reality/main/hy2_reality_install.sh && chmod +x hy2_reality_install.sh && bash hy2_reality_install.sh
+wget -N --no-check-certificate  https://raw.githubusercontent.com/chaconneX/one-click-hy2-reality/main/hy2_reality_install.sh && chmod +x hy2_reality_install.sh && bash hy2_reality_install.sh
 ```
 运行过程中会提示输入：
 
