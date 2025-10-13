@@ -5,39 +5,35 @@ hy2 &amp; reality一键安装脚本
 
 ## 📖 简介
 本项目提供一个 **一键安装脚本**，用于在 Linux 服务器上快速部署 **hysteria2 (hy2)** 与 **reality**。  
-脚本会自动完成以下任务：  
 
-- ✅ 安装依赖与服务  
-- ✅ 部署 hy2 与 reality  
-- ✅ 配置域名并启用 TLS  
-- ✅ 使用 **Cloudflare API** 自动添加 DNS 解析记录  
+你可以根据情况选择：  
+- ✅ 使用 **域名 + Cloudflare API** 自动配置  
+- ✅ 使用 **域名 + 自签证书**（无需 Cloudflare API）  
+- ✅ **无域名**，使用 IP + 自签证书  
 
 ---
 
-## ✨ 功能特点
-- 🖱️ 一键安装，零手动配置  
-- 🌐 自动对接 **Cloudflare DNS**  
-- 🔒 自动生成 **Reality 配置**  
-- 📜 自动申请证书 / DNS 验证  
-- ⚡ 开箱即用，输出客户端参数  
+## ✨ 功能
+- 一键安装，无需手动繁琐配置  
+- 支持 **自签证书**，无需购买域名也可使用  
+- 可选 **Cloudflare API 自动解析**，省去手动添加 DNS  
+- 自动输出客户端配置参数  
 
 ---
 
 ## 📌 前置条件
 在运行脚本前，请准备以下内容：
 
-1. **域名**  
-   - 已注册的域名  
-   - 已托管到 **Cloudflare**（NS 需指向 Cloudflare 提供的地址）  
+1. **服务器（必备）**  
+   - Linux 系统（推荐 Ubuntu 20.04 / 22.04）  
+   - 已开放 80 和 443 端口  
 
-2. **Cloudflare API Token**  
+2. **域名（可选）**  
+   - 如果使用域名，需要将 NS 指向 **Cloudflare**  
+
+3. **Cloudflare API Token（可选）**  
    - 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)  
-   - 创建 **API Token**（需 `Zone.DNS 编辑` 权限）  
-   - 保存该 Token，稍后脚本会用到  
-
-3. **服务器**  
-   - Linux 系统 
-   - 已开放 **80/443** 端口  
+   - 创建一个 API Token，权限需包含 `Zone.DNS 编辑`  
 
 ---
 
@@ -45,11 +41,13 @@ hy2 &amp; reality一键安装脚本
 ```bash
 wget -N --no-check-certificate  https://raw.githubusercontent.com/chaconneX/one-click-hy2-reality/main/hy2_reality_install.sh && chmod +x hy2_reality_install.sh && bash hy2_reality_install.sh
 ```
-运行过程中会提示输入：
+## 根据提示选择安装方式
 
-🌍 你的域名（例如：example.com）
+不输入域名 → 使用 IP + 自签证书
 
-🔑 Cloudflare API Token
+输入域名但不提供 API Token → 使用自签证书
+
+输入域名 + Cloudflare API Token → 自动解析并配置证书
 
 
 ## ⚙️ 输出信息：
