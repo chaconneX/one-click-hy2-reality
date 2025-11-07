@@ -3,9 +3,9 @@
 #####################################################################
 # Sing-box 管理脚本
 # 协议: Hysteria 2 + VLESS Reality Vision
-# 功能: 安装、卸载、灵活证书配置
+# 功能: 安装、卸载、灵活证书配置、中转服务器支持
 # 作者: Chaconne
-# 版本: 3.0
+# 版本: 4.0
 #####################################################################
 
 trap 'rm -f /root/hy2*txt /root/vless*txt /root/hy2*png /root/vless*png /root/share*' EXIT
@@ -35,6 +35,19 @@ SNI=""
 SERVER_IP=""
 USE_ACME=false
 DNS_PROVIDER="standalone"
+
+# 中转服务器配置
+SERVER_TYPE="landing"  # landing=落地服务器, relay=中转服务器
+RELAY_BACKEND_TYPE=""  # hy2 或 vless
+RELAY_BACKEND_ADDR=""  # 落地服务器地址
+RELAY_BACKEND_HY2_PORT=""
+RELAY_BACKEND_HY2_PASSWORD=""
+RELAY_BACKEND_VLESS_PORT=""
+RELAY_BACKEND_VLESS_UUID=""
+RELAY_BACKEND_VLESS_FLOW=""
+RELAY_BACKEND_VLESS_SNI=""
+RELAY_BACKEND_VLESS_PUBLIC_KEY=""
+RELAY_BACKEND_VLESS_SHORT_ID=""
 
 #####################################################################
 # 通用函数
@@ -84,9 +97,10 @@ show_main_menu() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════╗
 ║                                                   ║
-║       Sing-box 管理脚本 v3.0                      ║
+║       Sing-box 管理脚本 v4.0                      ║
 ║                                                   ║
 ║   Hysteria 2 + VLESS Reality Vision               ║
+║   支持中转服务器模式                              ║
 ║                                                   ║
 ╚═══════════════════════════════════════════════════╝
 EOF
@@ -333,7 +347,24 @@ interactive_config() {
     echo -e "${CYAN}  配置向导${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    
+
+    # 服务器类型选择
+    echo -e "${YELLOW}━━━ 服务器类型 ━━━${NC}"
+    echo "  1) 落地服务器 (直接出口)"
+    echo "  2) 中转服务器 (转发到落地VPS)"
+    echo ""
+    read -p "请选择服务器类型 [默认: 1]: " server_type_choice
+    server_type_choice=${server_type_choice:-1}
+
+    if [ "$server_type_choice" = "2" ]; then
+        SERVER_TYPE="relay"
+        print_info "配置为中转服务器模式"
+    else
+        SERVER_TYPE="landing"
+        print_info "配置为落地服务器模式"
+    fi
+    echo ""
+
     # 获取服务器 IP
     print_info "正在获取服务器 IP..."
     SERVER_IP=$(curl -s https://api.ipify.org || curl -s ifconfig.me || curl -s icanhazip.com)
@@ -449,12 +480,79 @@ interactive_config() {
     esac
     
     echo ""
-    
+
+    # 中转服务器配置
+    if [ "$SERVER_TYPE" = "relay" ]; then
+        echo -e "${YELLOW}━━━ 落地服务器配置 ━━━${NC}"
+        echo "请输入落地服务器的配置信息"
+        echo ""
+
+        read -p "落地服务器地址 (IP或域名): " RELAY_BACKEND_ADDR
+        if [ -z "$RELAY_BACKEND_ADDR" ]; then
+            print_error "落地服务器地址不能为空"
+            exit 1
+        fi
+
+        echo ""
+        echo "选择连接落地服务器的协议:"
+        echo "  1) Hysteria 2"
+        echo "  2) VLESS Reality"
+        read -p "请选择 [默认: 1]: " backend_type_choice
+        backend_type_choice=${backend_type_choice:-1}
+
+        if [ "$backend_type_choice" = "2" ]; then
+            RELAY_BACKEND_TYPE="vless"
+            echo ""
+            echo -e "${YELLOW}━━━ VLESS Reality 落地服务器配置 ━━━${NC}"
+            read -p "落地服务器端口 [默认: 8443]: " input_backend_port
+            RELAY_BACKEND_VLESS_PORT=${input_backend_port:-8443}
+
+            read -p "UUID: " RELAY_BACKEND_VLESS_UUID
+            if [ -z "$RELAY_BACKEND_VLESS_UUID" ]; then
+                print_error "UUID不能为空"
+                exit 1
+            fi
+
+            read -p "Flow [默认: xtls-rprx-vision]: " input_flow
+            RELAY_BACKEND_VLESS_FLOW=${input_flow:-xtls-rprx-vision}
+
+            read -p "SNI [默认: www.microsoft.com]: " input_sni
+            RELAY_BACKEND_VLESS_SNI=${input_sni:-www.microsoft.com}
+
+            read -p "Public Key: " RELAY_BACKEND_VLESS_PUBLIC_KEY
+            if [ -z "$RELAY_BACKEND_VLESS_PUBLIC_KEY" ]; then
+                print_error "Public Key不能为空"
+                exit 1
+            fi
+
+            read -p "Short ID: " RELAY_BACKEND_VLESS_SHORT_ID
+            if [ -z "$RELAY_BACKEND_VLESS_SHORT_ID" ]; then
+                print_error "Short ID不能为空"
+                exit 1
+            fi
+        else
+            RELAY_BACKEND_TYPE="hy2"
+            echo ""
+            echo -e "${YELLOW}━━━ Hysteria 2 落地服务器配置 ━━━${NC}"
+            read -p "落地服务器端口 [默认: 443]: " input_backend_port
+            RELAY_BACKEND_HY2_PORT=${input_backend_port:-443}
+
+            read -p "密码: " RELAY_BACKEND_HY2_PASSWORD
+            if [ -z "$RELAY_BACKEND_HY2_PASSWORD" ]; then
+                print_error "密码不能为空"
+                exit 1
+            fi
+        fi
+
+        echo ""
+    fi
+
     # 配置确认
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${CYAN}  配置确认${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    echo -e "${GREEN}服务器类型:${NC}     $([ "$SERVER_TYPE" = "relay" ] && echo "中转服务器" || echo "落地服务器")"
     echo -e "${GREEN}服务器 IP:${NC}      $SERVER_IP"
     if [ "$USE_ACME" = true ]; then
         echo -e "${GREEN}域名:${NC}           $CERT_DOMAIN"
@@ -465,6 +563,18 @@ interactive_config() {
     echo -e "${GREEN}Hysteria 2 端口:${NC} $HY2_PORT"
     echo -e "${GREEN}Reality 端口:${NC}    $REALITY_PORT"
     echo -e "${GREEN}Reality SNI:${NC}     $SNI"
+
+    if [ "$SERVER_TYPE" = "relay" ]; then
+        echo ""
+        echo -e "${YELLOW}落地服务器:${NC}"
+        echo -e "${GREEN}  地址:${NC}         $RELAY_BACKEND_ADDR"
+        echo -e "${GREEN}  协议:${NC}         $([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "Hysteria 2" || echo "VLESS Reality")"
+        if [ "$RELAY_BACKEND_TYPE" = "hy2" ]; then
+            echo -e "${GREEN}  端口:${NC}         $RELAY_BACKEND_HY2_PORT"
+        else
+            echo -e "${GREEN}  端口:${NC}         $RELAY_BACKEND_VLESS_PORT"
+        fi
+    fi
     echo ""
     
     read -p "确认以上配置并开始安装? (y/n): " confirm
@@ -563,16 +673,76 @@ generate_config() {
 
 create_singbox_config() {
     print_info "创建 sing-box 配置文件..."
-    
+
     mkdir -p /etc/sing-box
-    
+
     # 确定服务器名称
     if [ "$USE_ACME" = true ]; then
         SERVER_NAME="$CERT_DOMAIN"
     else
         SERVER_NAME="bing.com"
     fi
-    
+
+    # 生成outbounds配置
+    if [ "$SERVER_TYPE" = "relay" ]; then
+        # 中转服务器模式：outbound连接到落地服务器
+        if [ "$RELAY_BACKEND_TYPE" = "hy2" ]; then
+            # Hysteria 2 后端
+            OUTBOUND_CONFIG=$(cat <<OUTBOUND_EOF
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "backend",
+      "server": "${RELAY_BACKEND_ADDR}",
+      "server_port": ${RELAY_BACKEND_HY2_PORT},
+      "password": "${RELAY_BACKEND_HY2_PASSWORD}",
+      "tls": {
+        "enabled": true,
+        "server_name": "${RELAY_BACKEND_ADDR}",
+        "insecure": true
+      }
+    }
+  ]
+OUTBOUND_EOF
+)
+        else
+            # VLESS Reality 后端
+            OUTBOUND_CONFIG=$(cat <<OUTBOUND_EOF
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "backend",
+      "server": "${RELAY_BACKEND_ADDR}",
+      "server_port": ${RELAY_BACKEND_VLESS_PORT},
+      "uuid": "${RELAY_BACKEND_VLESS_UUID}",
+      "flow": "${RELAY_BACKEND_VLESS_FLOW}",
+      "tls": {
+        "enabled": true,
+        "server_name": "${RELAY_BACKEND_VLESS_SNI}",
+        "reality": {
+          "enabled": true,
+          "public_key": "${RELAY_BACKEND_VLESS_PUBLIC_KEY}",
+          "short_id": "${RELAY_BACKEND_VLESS_SHORT_ID}"
+        }
+      }
+    }
+  ]
+OUTBOUND_EOF
+)
+        fi
+    else
+        # 落地服务器模式：direct出口
+        OUTBOUND_CONFIG=$(cat <<OUTBOUND_EOF
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+OUTBOUND_EOF
+)
+    fi
+
     cat > /etc/sing-box/config.json <<EOF
 {
   "log": {
@@ -628,21 +798,16 @@ create_singbox_config() {
       }
     }
   ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
+${OUTBOUND_CONFIG}
 }
 EOF
-    
+
     if ! sing-box check -c /etc/sing-box/config.json; then
         print_error "配置文件验证失败"
         cat /etc/sing-box/config.json
         exit 1
     fi
-    
+
     print_success "配置文件创建成功"
 }
 
@@ -729,6 +894,7 @@ generate_share_info() {
 ╚═══════════════════════════════════════════════════════════════╝
 
 服务器信息:
+  类型: $([ "$SERVER_TYPE" = "relay" ] && echo "中转服务器" || echo "落地服务器")
   IP 地址: ${SERVER_IP}
 $([ "$USE_ACME" = true ] && echo "  域名: ${CERT_DOMAIN}")
 $([ "$USE_ACME" = true ] && echo "  证书: Let's Encrypt ($DNS_PROVIDER)" || echo "  证书: 自签名证书")
@@ -767,6 +933,20 @@ Short ID: ${REALITY_SHORT_ID}
 VLESS 分享链接:
 ${VLESS_LINK}
 
+$([ "$SERVER_TYPE" = "relay" ] && cat <<RELAY_INFO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+落地服务器配置 (中转模式)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️  注意: 此服务器为中转服务器，流量将转发到以下落地服务器
+
+落地服务器地址: ${RELAY_BACKEND_ADDR}
+协议类型: $([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "Hysteria 2" || echo "VLESS Reality")
+$([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "端口: ${RELAY_BACKEND_HY2_PORT}" || echo "端口: ${RELAY_BACKEND_VLESS_PORT}")
+$([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "密码: ${RELAY_BACKEND_HY2_PASSWORD}" || echo "UUID: ${RELAY_BACKEND_VLESS_UUID}")
+
+RELAY_INFO
+)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 文件位置
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -856,7 +1036,20 @@ EOF
         cat /root/vless_qr.txt 2>/dev/null || true
         echo ""
     fi
-    
+
+    # 中转服务器模式提示
+    if [ "$SERVER_TYPE" = "relay" ]; then
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${YELLOW}⚠️  中转服务器模式${NC}"
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "${CYAN}落地服务器: ${RELAY_BACKEND_ADDR}${NC}"
+        echo -e "${CYAN}协议: $([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "Hysteria 2" || echo "VLESS Reality")${NC}"
+        echo ""
+        echo -e "${YELLOW}提示: 客户端连接到本服务器(${CONNECT_ADDR})，流量将自动转发到落地服务器${NC}"
+        echo ""
+    fi
+
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}💡 重要信息${NC}"
     echo ""
