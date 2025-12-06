@@ -2,13 +2,13 @@
 
 #####################################################################
 # Sing-box 管理脚本
-# 协议: Hysteria 2 + VLESS Reality Vision
+# 协议: Hysteria 2 + VLESS Reality Vision + VLESS WS TLS
 # 功能: 安装、卸载、灵活证书配置、中转服务器支持
 # 作者: Chaconne
-# 版本: 4.0
+# 版本: 5.0
 #####################################################################
 
-trap 'rm -f /root/hy2*txt /root/vless*txt /root/hy2*png /root/vless*png /root/share*' EXIT
+trap 'rm -f /root/hy2*txt /root/vless*txt /root/vless_ws*txt /root/hy2*png /root/vless*png /root/vless_ws*png /root/share*' EXIT
 
 
 set -e
@@ -24,8 +24,11 @@ NC='\033[0m'
 # 配置参数
 HY2_PORT=""
 REALITY_PORT=""
+VLESS_WS_PORT=""
 HY2_PASSWORD=""
 REALITY_UUID=""
+VLESS_WS_UUID=""
+VLESS_WS_PATH=""
 REALITY_PRIVATE_KEY=""
 REALITY_PUBLIC_KEY=""
 REALITY_SHORT_ID=""
@@ -38,7 +41,7 @@ DNS_PROVIDER="standalone"
 
 # 中转服务器配置
 SERVER_TYPE="landing"  # landing=落地服务器, relay=中转服务器
-RELAY_BACKEND_TYPE=""  # hy2 或 vless
+RELAY_BACKEND_TYPE=""  # hy2, vless 或 vless-ws
 RELAY_BACKEND_ADDR=""  # 落地服务器地址
 RELAY_BACKEND_HY2_PORT=""
 RELAY_BACKEND_HY2_PASSWORD=""
@@ -48,6 +51,10 @@ RELAY_BACKEND_VLESS_FLOW=""
 RELAY_BACKEND_VLESS_SNI=""
 RELAY_BACKEND_VLESS_PUBLIC_KEY=""
 RELAY_BACKEND_VLESS_SHORT_ID=""
+RELAY_BACKEND_VLESS_WS_PORT=""
+RELAY_BACKEND_VLESS_WS_UUID=""
+RELAY_BACKEND_VLESS_WS_PATH=""
+RELAY_BACKEND_VLESS_WS_HOST=""
 
 #####################################################################
 # 通用函数
@@ -97,18 +104,18 @@ show_main_menu() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════╗
 ║                                                   ║
-║       Sing-box 管理脚本 v4.0                      ║
+║       Sing-box 管理脚本 v5.0                      ║
 ║                                                   ║
-║   Hysteria 2 + VLESS Reality Vision               ║
+║   Hysteria 2 + VLESS Reality + VLESS WS TLS       ║
 ║   支持中转服务器模式                              ║
 ║                                                   ║
 ╚═══════════════════════════════════════════════════╝
 EOF
     echo -e "${NC}"
-    
+
     echo -e "${CYAN}请选择操作:${NC}"
     echo ""
-    echo "  1)安装 Sing-box (Hysteria 2 + Reality)"
+    echo "  1)安装 Sing-box (Hy2 + Reality + WS)"
     echo "  2)卸载 Sing-box"
     echo "  3)查看配置信息"
     echo "  4)退出"
@@ -212,13 +219,14 @@ EOF
     rm -f /root/share_links.txt
     rm -f /root/hy2_link.txt
     rm -f /root/vless_link.txt
+    rm -f /root/vless_ws_link.txt
     rm -f /root/*_qr.png
     rm -f /root/*_qr.txt
     print_success "文件已删除"
     
     # 防火墙规则
     if command -v ufw &> /dev/null; then
-        ufw status numbered 2>/dev/null | grep -i "hysteria\|reality" | awk '{print $1}' | sed 's/\[//g' | sed 's/\]//g' | sort -rn | while read rule_num; do
+        ufw status numbered 2>/dev/null | grep -iE "hysteria|reality|vless.ws" | awk '{print $1}' | sed 's/\[//g' | sed 's/\]//g' | sort -rn | while read rule_num; do
             echo "y" | ufw delete $rule_num 2>/dev/null || true
         done
         ufw reload 2>/dev/null || true
@@ -449,10 +457,18 @@ interactive_config() {
     echo -e "${YELLOW}━━━ 端口配置 ━━━${NC}"
     read -p "Hysteria 2 端口 [默认: 443]: " input_hy2_port
     HY2_PORT=${input_hy2_port:-443}
-    
+
     read -p "Reality 端口 [默认: 8443]: " input_reality_port
     REALITY_PORT=${input_reality_port:-8443}
-    
+
+    read -p "VLESS WS TLS 端口 [默认: 2053]: " input_vless_ws_port
+    VLESS_WS_PORT=${input_vless_ws_port:-2053}
+
+    echo ""
+    echo -e "${YELLOW}━━━ VLESS WS 路径配置 ━━━${NC}"
+    read -p "WebSocket 路径 [默认: /ws]: " input_ws_path
+    VLESS_WS_PATH=${input_ws_path:-/ws}
+
     echo ""
     
     # SNI 配置
@@ -497,6 +513,7 @@ interactive_config() {
         echo "选择连接落地服务器的协议:"
         echo "  1) Hysteria 2"
         echo "  2) VLESS Reality"
+        echo "  3) VLESS WS TLS"
         read -p "请选择 [默认: 1]: " backend_type_choice
         backend_type_choice=${backend_type_choice:-1}
 
@@ -530,6 +547,24 @@ interactive_config() {
                 print_error "Short ID不能为空"
                 exit 1
             fi
+        elif [ "$backend_type_choice" = "3" ]; then
+            RELAY_BACKEND_TYPE="vless-ws"
+            echo ""
+            echo -e "${YELLOW}━━━ VLESS WS TLS 落地服务器配置 ━━━${NC}"
+            read -p "落地服务器端口 [默认: 2053]: " input_backend_port
+            RELAY_BACKEND_VLESS_WS_PORT=${input_backend_port:-2053}
+
+            read -p "UUID: " RELAY_BACKEND_VLESS_WS_UUID
+            if [ -z "$RELAY_BACKEND_VLESS_WS_UUID" ]; then
+                print_error "UUID不能为空"
+                exit 1
+            fi
+
+            read -p "WebSocket 路径 [默认: /ws]: " input_ws_path
+            RELAY_BACKEND_VLESS_WS_PATH=${input_ws_path:-/ws}
+
+            read -p "Host/SNI [默认: 落地服务器地址]: " input_ws_host
+            RELAY_BACKEND_VLESS_WS_HOST=${input_ws_host:-$RELAY_BACKEND_ADDR}
         else
             RELAY_BACKEND_TYPE="hy2"
             echo ""
@@ -563,16 +598,25 @@ interactive_config() {
     echo -e "${GREEN}Hysteria 2 端口:${NC} $HY2_PORT"
     echo -e "${GREEN}Reality 端口:${NC}    $REALITY_PORT"
     echo -e "${GREEN}Reality SNI:${NC}     $SNI"
+    echo -e "${GREEN}VLESS WS 端口:${NC}   $VLESS_WS_PORT"
+    echo -e "${GREEN}VLESS WS 路径:${NC}   $VLESS_WS_PATH"
 
     if [ "$SERVER_TYPE" = "relay" ]; then
         echo ""
         echo -e "${YELLOW}落地服务器:${NC}"
         echo -e "${GREEN}  地址:${NC}         $RELAY_BACKEND_ADDR"
-        echo -e "${GREEN}  协议:${NC}         $([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "Hysteria 2" || echo "VLESS Reality")"
+        case "$RELAY_BACKEND_TYPE" in
+            hy2) echo -e "${GREEN}  协议:${NC}         Hysteria 2" ;;
+            vless) echo -e "${GREEN}  协议:${NC}         VLESS Reality" ;;
+            vless-ws) echo -e "${GREEN}  协议:${NC}         VLESS WS TLS" ;;
+        esac
         if [ "$RELAY_BACKEND_TYPE" = "hy2" ]; then
             echo -e "${GREEN}  端口:${NC}         $RELAY_BACKEND_HY2_PORT"
-        else
+        elif [ "$RELAY_BACKEND_TYPE" = "vless" ]; then
             echo -e "${GREEN}  端口:${NC}         $RELAY_BACKEND_VLESS_PORT"
+        else
+            echo -e "${GREEN}  端口:${NC}         $RELAY_BACKEND_VLESS_WS_PORT"
+            echo -e "${GREEN}  路径:${NC}         $RELAY_BACKEND_VLESS_WS_PATH"
         fi
     fi
     echo ""
@@ -658,16 +702,17 @@ setup_certificate() {
 
 generate_config() {
     print_info "生成配置参数..."
-    
+
     HY2_PASSWORD=$(cat /proc/sys/kernel/random/uuid)
     REALITY_UUID=$(cat /proc/sys/kernel/random/uuid)
-    
+    VLESS_WS_UUID=$(cat /proc/sys/kernel/random/uuid)
+
     REALITY_KEYS=$(sing-box generate reality-keypair)
     REALITY_PRIVATE_KEY=$(echo "$REALITY_KEYS" | grep "PrivateKey:" | awk '{print $2}')
     REALITY_PUBLIC_KEY=$(echo "$REALITY_KEYS" | grep "PublicKey:" | awk '{print $2}')
-    
+
     REALITY_SHORT_ID=$(openssl rand -hex 8)
-    
+
     print_success "配置参数生成完成"
 }
 
@@ -705,7 +750,7 @@ create_singbox_config() {
   ]
 OUTBOUND_EOF
 )
-        else
+        elif [ "$RELAY_BACKEND_TYPE" = "vless" ]; then
             # VLESS Reality 后端
             OUTBOUND_CONFIG=$(cat <<OUTBOUND_EOF
   "outbounds": [
@@ -723,6 +768,32 @@ OUTBOUND_EOF
           "enabled": true,
           "public_key": "${RELAY_BACKEND_VLESS_PUBLIC_KEY}",
           "short_id": "${RELAY_BACKEND_VLESS_SHORT_ID}"
+        }
+      }
+    }
+  ]
+OUTBOUND_EOF
+)
+        else
+            # VLESS WS TLS 后端
+            OUTBOUND_CONFIG=$(cat <<OUTBOUND_EOF
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "backend",
+      "server": "${RELAY_BACKEND_ADDR}",
+      "server_port": ${RELAY_BACKEND_VLESS_WS_PORT},
+      "uuid": "${RELAY_BACKEND_VLESS_WS_UUID}",
+      "tls": {
+        "enabled": true,
+        "server_name": "${RELAY_BACKEND_VLESS_WS_HOST}",
+        "insecure": true
+      },
+      "transport": {
+        "type": "ws",
+        "path": "${RELAY_BACKEND_VLESS_WS_PATH}",
+        "headers": {
+          "Host": "${RELAY_BACKEND_VLESS_WS_HOST}"
         }
       }
     }
@@ -796,6 +867,27 @@ OUTBOUND_EOF
           ]
         }
       }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-ws-in",
+      "listen": "::",
+      "listen_port": ${VLESS_WS_PORT},
+      "users": [
+        {
+          "uuid": "${VLESS_WS_UUID}"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "${SERVER_NAME}",
+        "key_path": "/etc/sing-box/certs/private.key",
+        "certificate_path": "/etc/sing-box/certs/cert.crt"
+      },
+      "transport": {
+        "type": "ws",
+        "path": "${VLESS_WS_PATH}"
+      }
     }
   ],
 ${OUTBOUND_CONFIG}
@@ -840,17 +932,19 @@ EOF
 
 configure_firewall() {
     print_info "配置防火墙..."
-    
+
     if command -v ufw &> /dev/null; then
         ufw allow ${HY2_PORT}/udp comment "Hysteria 2" >/dev/null 2>&1
         ufw allow ${REALITY_PORT}/tcp comment "Reality" >/dev/null 2>&1
+        ufw allow ${VLESS_WS_PORT}/tcp comment "VLESS WS" >/dev/null 2>&1
         ufw reload >/dev/null 2>&1 || true
         print_success "UFW 防火墙规则已添加"
     fi
-    
+
     if command -v firewall-cmd &> /dev/null; then
         firewall-cmd --permanent --add-port=${HY2_PORT}/udp >/dev/null 2>&1
         firewall-cmd --permanent --add-port=${REALITY_PORT}/tcp >/dev/null 2>&1
+        firewall-cmd --permanent --add-port=${VLESS_WS_PORT}/tcp >/dev/null 2>&1
         firewall-cmd --reload >/dev/null 2>&1
         print_success "firewalld 防火墙规则已添加"
     fi
@@ -875,16 +969,18 @@ start_service() {
 
 generate_share_info() {
     print_info "生成分享信息..."
-    
+
     # 确定连接地址
     if [ "$USE_ACME" = true ]; then
         CONNECT_ADDR="$CERT_DOMAIN"
         HY2_LINK="hysteria2://${HY2_PASSWORD}@${CERT_DOMAIN}:${HY2_PORT}/?insecure=0&sni=${CERT_DOMAIN}#${CERT_DOMAIN}"
+        VLESS_WS_LINK="vless://${VLESS_WS_UUID}@${CERT_DOMAIN}:${VLESS_WS_PORT}?encryption=none&security=tls&sni=${CERT_DOMAIN}&type=ws&host=${CERT_DOMAIN}&path=$(echo ${VLESS_WS_PATH} | sed 's/\//%2F/g')#VLESS-WS-${CERT_DOMAIN}"
     else
         CONNECT_ADDR="$SERVER_IP"
         HY2_LINK="hysteria2://${HY2_PASSWORD}@${SERVER_IP}:${HY2_PORT}/?insecure=1#Hysteria2-${SERVER_IP}"
+        VLESS_WS_LINK="vless://${VLESS_WS_UUID}@${SERVER_IP}:${VLESS_WS_PORT}?encryption=none&security=tls&sni=${SERVER_IP}&type=ws&host=${SERVER_IP}&path=$(echo ${VLESS_WS_PATH} | sed 's/\//%2F/g')&allowInsecure=1#VLESS-WS-${SERVER_IP}"
     fi
-    
+
     VLESS_LINK="vless://${REALITY_UUID}@${CONNECT_ADDR}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${REALITY_SHORT_ID}&type=tcp&headerType=none#Reality-${CONNECT_ADDR}"
     
     # 生成配置文件
@@ -933,6 +1029,21 @@ Short ID: ${REALITY_SHORT_ID}
 VLESS 分享链接:
 ${VLESS_LINK}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VLESS WS TLS 配置
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+地址: ${CONNECT_ADDR}
+端口: ${VLESS_WS_PORT}
+UUID: ${VLESS_WS_UUID}
+传输: WebSocket
+路径: ${VLESS_WS_PATH}
+TLS: 启用
+$([ "$USE_ACME" != true ] && echo "注意: 使用自签名证书，客户端需允许不安全连接")
+
+VLESS WS 分享链接:
+${VLESS_WS_LINK}
+
 $([ "$SERVER_TYPE" = "relay" ] && cat <<RELAY_INFO
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 落地服务器配置 (中转模式)
@@ -941,9 +1052,18 @@ $([ "$SERVER_TYPE" = "relay" ] && cat <<RELAY_INFO
 ⚠️  注意: 此服务器为中转服务器，流量将转发到以下落地服务器
 
 落地服务器地址: ${RELAY_BACKEND_ADDR}
-协议类型: $([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "Hysteria 2" || echo "VLESS Reality")
-$([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "端口: ${RELAY_BACKEND_HY2_PORT}" || echo "端口: ${RELAY_BACKEND_VLESS_PORT}")
-$([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "密码: ${RELAY_BACKEND_HY2_PASSWORD}" || echo "UUID: ${RELAY_BACKEND_VLESS_UUID}")
+$(case "$RELAY_BACKEND_TYPE" in
+    hy2) echo "协议类型: Hysteria 2
+端口: ${RELAY_BACKEND_HY2_PORT}
+密码: ${RELAY_BACKEND_HY2_PASSWORD}" ;;
+    vless) echo "协议类型: VLESS Reality
+端口: ${RELAY_BACKEND_VLESS_PORT}
+UUID: ${RELAY_BACKEND_VLESS_UUID}" ;;
+    vless-ws) echo "协议类型: VLESS WS TLS
+端口: ${RELAY_BACKEND_VLESS_WS_PORT}
+UUID: ${RELAY_BACKEND_VLESS_WS_UUID}
+路径: ${RELAY_BACKEND_VLESS_WS_PATH}" ;;
+esac)
 
 RELAY_INFO
 )
@@ -960,20 +1080,25 @@ EOF
 
     echo "$HY2_LINK" > /root/hy2_link.txt
     echo "$VLESS_LINK" > /root/vless_link.txt
-    
+    echo "$VLESS_WS_LINK" > /root/vless_ws_link.txt
+
     cat > /root/share_links.txt <<EOF
 Hysteria 2: ${HY2_LINK}
 
 VLESS Reality: ${VLESS_LINK}
+
+VLESS WS TLS: ${VLESS_WS_LINK}
 EOF
-    
+
     if command -v qrencode &> /dev/null; then
         qrencode -t ANSIUTF8 -o /root/hy2_qr.txt "$HY2_LINK" 2>/dev/null || true
         qrencode -t PNG -o /root/hy2_qr.png "$HY2_LINK" 2>/dev/null || true
         qrencode -t ANSIUTF8 -o /root/vless_qr.txt "$VLESS_LINK" 2>/dev/null || true
         qrencode -t PNG -o /root/vless_qr.png "$VLESS_LINK" 2>/dev/null || true
+        qrencode -t ANSIUTF8 -o /root/vless_ws_qr.txt "$VLESS_WS_LINK" 2>/dev/null || true
+        qrencode -t PNG -o /root/vless_ws_qr.png "$VLESS_WS_LINK" 2>/dev/null || true
     fi
-    
+
     print_success "配置信息已保存"
 }
 
@@ -1037,6 +1162,32 @@ EOF
         echo ""
     fi
 
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  VLESS WS TLS 配置${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    if [ "$USE_ACME" = true ]; then
+        echo -e "${CYAN}连接: ${CERT_DOMAIN}:${VLESS_WS_PORT}${NC}"
+    else
+        echo -e "${CYAN}连接: ${SERVER_IP}:${VLESS_WS_PORT}${NC}"
+        echo -e "${YELLOW}注意: 客户端需允许不安全连接${NC}"
+    fi
+    echo -e "${CYAN}UUID: ${VLESS_WS_UUID}${NC}"
+    echo -e "${CYAN}路径: ${VLESS_WS_PATH}${NC}"
+    echo ""
+    echo -e "${YELLOW}分享链接:${NC}"
+    echo "${VLESS_WS_LINK}"
+    echo ""
+
+    if [ -f /root/vless_ws_qr.txt ]; then
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${GREEN}  二维码${NC}"
+        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        cat /root/vless_ws_qr.txt 2>/dev/null || true
+        echo ""
+    fi
+
     # 中转服务器模式提示
     if [ "$SERVER_TYPE" = "relay" ]; then
         echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1044,7 +1195,11 @@ EOF
         echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""
         echo -e "${CYAN}落地服务器: ${RELAY_BACKEND_ADDR}${NC}"
-        echo -e "${CYAN}协议: $([ "$RELAY_BACKEND_TYPE" = "hy2" ] && echo "Hysteria 2" || echo "VLESS Reality")${NC}"
+        case "$RELAY_BACKEND_TYPE" in
+            hy2) echo -e "${CYAN}协议: Hysteria 2${NC}" ;;
+            vless) echo -e "${CYAN}协议: VLESS Reality${NC}" ;;
+            vless-ws) echo -e "${CYAN}协议: VLESS WS TLS${NC}" ;;
+        esac
         echo ""
         echo -e "${YELLOW}提示: 客户端连接到本服务器(${CONNECT_ADDR})，流量将自动转发到落地服务器${NC}"
         echo ""
