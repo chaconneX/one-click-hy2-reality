@@ -1,4 +1,4 @@
-# one-click-hy2-reality
+# one-click-hy2-reality-ws
 hy2 &amp; reality &amp; vless-ws 一键安装脚本
 
 # 🚀 Hysteria 2 + VLESS Reality + VLESS WS TLS 一键安装脚本
