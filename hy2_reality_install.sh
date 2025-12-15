@@ -5,7 +5,7 @@
 # 协议: Hysteria 2 + VLESS Reality Vision + VLESS WS TLS
 # 功能: 安装、卸载、灵活证书配置、中转服务器支持
 # 作者: Chaconne
-# 版本: 5.0
+# 版本: 6.0
 #####################################################################
 
 trap 'rm -f /root/hy2*txt /root/vless*txt /root/vless_ws*txt /root/hy2*png /root/vless*png /root/vless_ws*png /root/share*' EXIT
@@ -104,10 +104,10 @@ show_main_menu() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════╗
 ║                                                   ║
-║       Sing-box 管理脚本 v5.0                      ║
+║       Sing-box 管理脚本 v6.0                      ║
 ║                                                   ║
 ║   Hysteria 2 + VLESS Reality + VLESS WS TLS       ║
-║   支持中转服务器模式                              ║
+║   支持中转服务器模式 + VPS调优                    ║
 ║                                                   ║
 ╚═══════════════════════════════════════════════════╝
 EOF
@@ -115,14 +115,15 @@ EOF
 
     echo -e "${CYAN}请选择操作:${NC}"
     echo ""
-    echo "  1)安装 Sing-box (Hy2 + Reality + WS)"
-    echo "  2)卸载 Sing-box"
-    echo "  3)查看配置信息"
-    echo "  4)退出"
+    echo "  1) 安装 Sing-box (Hy2 + Reality + WS)"
+    echo "  2) 卸载 Sing-box"
+    echo "  3) 查看配置信息"
+    echo "  4) VPS 系统调优 (BBR + TCP优化)"
+    echo "  5) 退出"
     echo ""
-    
-    read -p "请输入选项 [1-4]: " menu_choice
-    
+
+    read -p "请输入选项 [1-5]: " menu_choice
+
     case $menu_choice in
         1)
             install_singbox_menu
@@ -134,6 +135,9 @@ EOF
             show_config_menu
             ;;
         4)
+            show_optimize_menu
+            ;;
+        5)
             echo -e "${GREEN}再见！${NC}"
             exit 0
             ;;
@@ -156,13 +160,475 @@ show_config_menu() {
         show_main_menu
         return
     fi
-    
+
     clear
     cat /root/sing-box-info.txt
     echo ""
     echo -e "${YELLOW}按任意键返回主菜单...${NC}"
     read -n 1
     show_main_menu
+}
+
+#####################################################################
+# VPS 调优功能
+#####################################################################
+
+# 检查当前BBR状态
+check_bbr_status() {
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)
+    local bbr_module=$(lsmod | grep -c bbr)
+
+    echo -e "${CYAN}当前TCP拥塞控制算法: ${NC}${current_cc}"
+    echo -e "${CYAN}可用算法: ${NC}${available_cc}"
+
+    if [[ "$current_cc" == "bbr" ]]; then
+        echo -e "${GREEN}✓ BBR 已启用${NC}"
+        return 0
+    else
+        echo -e "${YELLOW}✗ BBR 未启用${NC}"
+        return 1
+    fi
+}
+
+# 检查系统优化状态
+check_optimization_status() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  当前系统状态${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    # BBR状态
+    check_bbr_status
+    echo ""
+
+    # 文件描述符限制
+    local current_nofile=$(ulimit -n)
+    echo -e "${CYAN}文件描述符限制: ${NC}${current_nofile}"
+
+    # TCP快速打开
+    local tfo=$(sysctl -n net.ipv4.tcp_fastopen 2>/dev/null)
+    if [[ "$tfo" -ge 3 ]]; then
+        echo -e "${GREEN}✓ TCP Fast Open 已启用 (值: $tfo)${NC}"
+    else
+        echo -e "${YELLOW}✗ TCP Fast Open 未完全启用 (值: $tfo)${NC}"
+    fi
+
+    # 内核版本
+    echo -e "${CYAN}内核版本: ${NC}$(uname -r)"
+    echo ""
+}
+
+# 开启BBR
+enable_bbr() {
+    print_info "正在启用 BBR..."
+
+    # 检查内核版本是否支持BBR (4.9+)
+    local kernel_version=$(uname -r | cut -d. -f1,2)
+    local kernel_major=$(echo $kernel_version | cut -d. -f1)
+    local kernel_minor=$(echo $kernel_version | cut -d. -f2)
+
+    if [[ $kernel_major -lt 4 ]] || [[ $kernel_major -eq 4 && $kernel_minor -lt 9 ]]; then
+        print_error "内核版本 $(uname -r) 不支持BBR，需要 4.9 或更高版本"
+        print_info "建议升级内核或使用其他拥塞控制算法"
+        return 1
+    fi
+
+    # 加载BBR模块
+    modprobe tcp_bbr 2>/dev/null || true
+
+    # 配置BBR
+    cat >> /etc/sysctl.conf <<'SYSCTL_BBR'
+
+# BBR 拥塞控制
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+SYSCTL_BBR
+
+    # 移除重复配置
+    sort -u /etc/sysctl.conf | grep -v '^$' > /tmp/sysctl.tmp
+    mv /tmp/sysctl.tmp /etc/sysctl.conf
+
+    sysctl -p >/dev/null 2>&1
+
+    # 验证
+    local current_cc=$(sysctl -n net.ipv4.tcp_congestion_control)
+    if [[ "$current_cc" == "bbr" ]]; then
+        print_success "BBR 已成功启用"
+        return 0
+    else
+        print_error "BBR 启用失败"
+        return 1
+    fi
+}
+
+# TCP优化
+optimize_tcp() {
+    print_info "正在优化 TCP 参数..."
+
+    # 备份原配置
+    cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
+
+    cat >> /etc/sysctl.conf <<'SYSCTL_TCP'
+
+# =============================================
+# TCP 优化配置 - 降低延迟、提高吞吐量
+# =============================================
+
+# --- 网络缓冲区优化 ---
+# 增大套接字缓冲区，提高大流量传输性能
+net.core.rmem_default = 262144
+net.core.rmem_max = 16777216
+net.core.wmem_default = 262144
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 262144 16777216
+net.ipv4.tcp_wmem = 4096 262144 16777216
+
+# 网络设备队列长度
+net.core.netdev_max_backlog = 65536
+net.core.somaxconn = 65535
+
+# --- TCP 连接优化 ---
+# TCP Fast Open - 减少握手延迟
+net.ipv4.tcp_fastopen = 3
+
+# 启用TCP窗口缩放，支持大于64K的窗口
+net.ipv4.tcp_window_scaling = 1
+
+# MTU探测，优化路径MTU
+net.ipv4.tcp_mtu_probing = 1
+
+# 启用SACK和DSACK，改善丢包恢复
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_dsack = 1
+
+# 启用时间戳，提高RTT计算精度
+net.ipv4.tcp_timestamps = 1
+
+# 禁用慢启动重启，保持传输速度
+net.ipv4.tcp_slow_start_after_idle = 0
+
+# --- TCP 超时和重试优化 ---
+# 减少FIN-WAIT-2超时时间
+net.ipv4.tcp_fin_timeout = 15
+
+# 减少TIME-WAIT套接字数量
+net.ipv4.tcp_max_tw_buckets = 65536
+net.ipv4.tcp_tw_reuse = 1
+
+# 减少SYN重试次数，加快连接失败检测
+net.ipv4.tcp_syn_retries = 2
+net.ipv4.tcp_synack_retries = 2
+
+# --- TCP Keepalive 优化 ---
+# 更快检测断开的连接
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_probes = 5
+net.ipv4.tcp_keepalive_intvl = 15
+
+# 孤儿连接处理
+net.ipv4.tcp_max_orphans = 65536
+
+# SYN队列长度
+net.ipv4.tcp_max_syn_backlog = 65536
+
+# --- 内存管理 ---
+net.ipv4.tcp_mem = 786432 1048576 1572864
+SYSCTL_TCP
+
+    # 移除重复配置
+    awk '!seen[$0]++' /etc/sysctl.conf > /tmp/sysctl.tmp
+    mv /tmp/sysctl.tmp /etc/sysctl.conf
+
+    sysctl -p >/dev/null 2>&1
+
+    print_success "TCP 参数优化完成"
+}
+
+# UDP/QUIC优化 (对Hysteria 2特别有效)
+optimize_udp() {
+    print_info "正在优化 UDP/QUIC 参数 (Hysteria 2 加速)..."
+
+    cat >> /etc/sysctl.conf <<'SYSCTL_UDP'
+
+# =============================================
+# UDP/QUIC 优化配置 - Hysteria 2 加速
+# =============================================
+
+# 增大UDP缓冲区
+net.core.rmem_default = 26214400
+net.core.rmem_max = 26214400
+net.core.wmem_default = 26214400
+net.core.wmem_max = 26214400
+
+# 增大UDP接收缓冲区队列
+net.core.netdev_budget = 600
+net.core.netdev_budget_usecs = 20000
+
+# 允许更多的数据包排队等待
+net.core.netdev_max_backlog = 65536
+SYSCTL_UDP
+
+    # 移除重复配置
+    awk '!seen[$0]++' /etc/sysctl.conf > /tmp/sysctl.tmp
+    mv /tmp/sysctl.tmp /etc/sysctl.conf
+
+    sysctl -p >/dev/null 2>&1
+
+    print_success "UDP/QUIC 参数优化完成"
+}
+
+# 系统限制优化
+optimize_system_limits() {
+    print_info "正在优化系统限制..."
+
+    # 优化文件描述符限制
+    cat > /etc/security/limits.d/99-proxy-optimize.conf <<'LIMITS'
+# 代理服务器优化 - 增大文件描述符限制
+* soft nofile 1048576
+* hard nofile 1048576
+* soft nproc 65535
+* hard nproc 65535
+root soft nofile 1048576
+root hard nofile 1048576
+root soft nproc 65535
+root hard nproc 65535
+LIMITS
+
+    # 确保PAM读取limits
+    if ! grep -q "pam_limits.so" /etc/pam.d/common-session 2>/dev/null; then
+        echo "session required pam_limits.so" >> /etc/pam.d/common-session 2>/dev/null || true
+    fi
+
+    # 系统级文件描述符限制
+    cat >> /etc/sysctl.conf <<'SYSCTL_FS'
+
+# =============================================
+# 系统限制优化
+# =============================================
+
+# 增大系统文件描述符限制
+fs.file-max = 2097152
+fs.nr_open = 2097152
+
+# 增大inotify限制
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 524288
+SYSCTL_FS
+
+    # 移除重复配置
+    awk '!seen[$0]++' /etc/sysctl.conf > /tmp/sysctl.tmp
+    mv /tmp/sysctl.tmp /etc/sysctl.conf
+
+    sysctl -p >/dev/null 2>&1
+
+    print_success "系统限制优化完成"
+}
+
+# 网络延迟优化
+optimize_latency() {
+    print_info "正在应用低延迟优化..."
+
+    cat >> /etc/sysctl.conf <<'SYSCTL_LATENCY'
+
+# =============================================
+# 低延迟优化配置
+# =============================================
+
+# 禁用IPv6 (如果不需要)
+# net.ipv6.conf.all.disable_ipv6 = 1
+# net.ipv6.conf.default.disable_ipv6 = 1
+
+# 启用IP转发 (中转服务器需要)
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+
+# 减少路由缓存刷新时间
+net.ipv4.route.gc_timeout = 100
+
+# 本地端口范围扩大
+net.ipv4.ip_local_port_range = 1024 65535
+
+# 允许TIME-WAIT socket重用
+net.ipv4.tcp_tw_reuse = 1
+
+# 减少ICMP限制，加快路径MTU发现
+net.ipv4.icmp_ratelimit = 100
+net.ipv4.icmp_ratemask = 88089
+
+# ARP缓存优化
+net.ipv4.neigh.default.gc_stale_time = 120
+net.ipv4.neigh.default.gc_thresh1 = 1024
+net.ipv4.neigh.default.gc_thresh2 = 4096
+net.ipv4.neigh.default.gc_thresh3 = 8192
+SYSCTL_LATENCY
+
+    # 移除重复配置
+    awk '!seen[$0]++' /etc/sysctl.conf > /tmp/sysctl.tmp
+    mv /tmp/sysctl.tmp /etc/sysctl.conf
+
+    sysctl -p >/dev/null 2>&1
+
+    print_success "低延迟优化完成"
+}
+
+# 一键全面优化
+full_optimization() {
+    echo ""
+    print_info "开始全面系统优化..."
+    echo ""
+
+    enable_bbr
+    echo ""
+    optimize_tcp
+    echo ""
+    optimize_udp
+    echo ""
+    optimize_system_limits
+    echo ""
+    optimize_latency
+    echo ""
+
+    # 重启sing-box服务以应用新的限制
+    if systemctl is-active --quiet sing-box 2>/dev/null; then
+        print_info "重启 sing-box 服务..."
+        systemctl restart sing-box
+        print_success "sing-box 服务已重启"
+    fi
+
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  ✅ 系统优化完成！${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "${YELLOW}优化内容:${NC}"
+    echo "  • BBR 拥塞控制算法"
+    echo "  • TCP 缓冲区和超时优化"
+    echo "  • UDP/QUIC 缓冲区优化 (Hysteria 2)"
+    echo "  • 系统文件描述符限制提升"
+    echo "  • 低延迟网络参数调优"
+    echo ""
+    echo -e "${YELLOW}提示:${NC}"
+    echo "  • 某些优化可能需要重启系统才能完全生效"
+    echo "  • 配置已备份到 /etc/sysctl.conf.bak.*"
+    echo ""
+}
+
+# 恢复默认配置
+restore_defaults() {
+    print_warning "此操作将恢复系统默认网络配置"
+    read -p "确认要恢复吗? (yes/no): " confirm
+
+    if [ "$confirm" != "yes" ]; then
+        print_info "已取消恢复操作"
+        return
+    fi
+
+    print_info "正在恢复默认配置..."
+
+    # 查找最近的备份
+    local backup_file=$(ls -t /etc/sysctl.conf.bak.* 2>/dev/null | head -1)
+
+    if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
+        cp "$backup_file" /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+        print_success "已恢复到备份: $backup_file"
+    else
+        # 创建最小化的sysctl配置
+        cat > /etc/sysctl.conf <<'DEFAULT_SYSCTL'
+# 系统默认配置
+net.ipv4.ip_forward = 0
+net.ipv4.tcp_congestion_control = cubic
+DEFAULT_SYSCTL
+        sysctl -p >/dev/null 2>&1
+        print_success "已恢复系统默认配置"
+    fi
+
+    # 删除limits配置
+    rm -f /etc/security/limits.d/99-proxy-optimize.conf
+
+    print_success "恢复完成"
+}
+
+# VPS调优菜单
+show_optimize_menu() {
+    clear
+    echo -e "${CYAN}"
+    cat << "EOF"
+╔═══════════════════════════════════════════════════╗
+║                                                   ║
+║       VPS 系统调优                                ║
+║                                                   ║
+║   BBR + TCP优化 + UDP/QUIC优化                    ║
+║   降低延迟 · 提高速度 · 优化Hysteria 2            ║
+║                                                   ║
+╚═══════════════════════════════════════════════════╝
+EOF
+    echo -e "${NC}"
+
+    check_optimization_status
+
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  调优选项${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "  1) 一键全面优化 (推荐)"
+    echo "  2) 仅开启 BBR"
+    echo "  3) 仅优化 TCP 参数"
+    echo "  4) 仅优化 UDP/QUIC (Hysteria 2)"
+    echo "  5) 仅优化系统限制"
+    echo "  6) 仅优化低延迟参数"
+    echo "  7) 恢复默认配置"
+    echo "  8) 返回主菜单"
+    echo ""
+
+    read -p "请选择 [1-8]: " opt_choice
+
+    case $opt_choice in
+        1)
+            full_optimization
+            ;;
+        2)
+            echo ""
+            enable_bbr
+            ;;
+        3)
+            echo ""
+            optimize_tcp
+            ;;
+        4)
+            echo ""
+            optimize_udp
+            ;;
+        5)
+            echo ""
+            optimize_system_limits
+            ;;
+        6)
+            echo ""
+            optimize_latency
+            ;;
+        7)
+            echo ""
+            restore_defaults
+            ;;
+        8)
+            show_main_menu
+            return
+            ;;
+        *)
+            print_error "无效选项"
+            sleep 2
+            show_optimize_menu
+            return
+            ;;
+    esac
+
+    echo ""
+    echo -e "${YELLOW}按任意键返回调优菜单...${NC}"
+    read -n 1
+    show_optimize_menu
 }
 
 #####################################################################
